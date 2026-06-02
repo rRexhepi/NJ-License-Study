@@ -673,6 +673,34 @@ let fcFlipped = false;
 let fcMode = 'all'; // 'all' or 'weak'
 let mockState = null;
 let quizFilter = 'all'; // 'all' or 'wrong' or 'unanswered'
+let quizOrder = null; // shuffled MCQ indices for the current session
+let quizOptOrder = null; // {origQuestionIdx: [shuffled option indices]}
+
+function shuffleArr(a){
+  for(let k = a.length - 1; k > 0; k--){
+    const j = Math.floor(Math.random() * (k + 1));
+    [a[k], a[j]] = [a[j], a[k]];
+  }
+  return a;
+}
+function shuffleQuestion(orig){
+  // returns a new question object with shuffled options + remapped ans
+  // _orig keeps the original so re-shuffles still work
+  const ord = shuffleArr(orig.opts.map((_, j) => j));
+  return {
+    q: orig.q,
+    opts: ord.map(j => orig.opts[j]),
+    ans: ord.indexOf(orig.ans),
+    expl: orig.expl,
+    signId: orig.signId,
+    _orig: orig._orig || orig
+  };
+}
+function shuffleQuiz(){
+  quizOrder = shuffleArr(MCQS.map((_, i) => i));
+  quizOptOrder = {};
+  MCQS.forEach((q, i) => { quizOptOrder[i] = shuffleArr(q.opts.map((_, j) => j)); });
+}
 
 function loadState(){
   try{
@@ -707,7 +735,7 @@ function setPage(p){
   if(p === 'guide') renderGuide();
   else if(p === 'signs') renderSigns();
   else if(p === 'flash') renderFlash();
-  else if(p === 'quiz') renderQuiz();
+  else if(p === 'quiz') { shuffleQuiz(); renderQuiz(); }
   else if(p === 'mock') renderMock();
   else if(p === 'notes') renderNotes();
   window.scrollTo({top:0, behavior:'smooth'});
@@ -903,52 +931,62 @@ function moveBox(n){
 
 // =============== QUIZ ===============
 function renderQuiz(){
+  if(!quizOrder) shuffleQuiz();
   const answers = state.quiz;
   const answered = Object.keys(answers).length;
   const correct = Object.entries(answers).filter(([i, v]) => v === MCQS[+i].ans).length;
   const wrong = answered - correct;
   const pct = answered > 0 ? Math.round((correct / answered) * 100) : 0;
-  const visible = MCQS.map((q, i) => ({q, i})).filter(({q, i}) => {
+  const visible = quizOrder.map(i => ({q: MCQS[i], i})).filter(({q, i}) => {
     if(quizFilter === 'wrong') return answers[i] !== undefined && answers[i] !== q.ans;
     if(quizFilter === 'unanswered') return answers[i] === undefined;
     return true;
   });
   document.getElementById('page-quiz').innerHTML = `
     <h2 style="font-size:22px;font-weight:800;color:var(--primary);margin-bottom:6px">Practice Quiz</h2>
-    <p style="color:var(--text2);margin-bottom:14px">${MCQS.length} questions covering everything on the test. Pick an answer to see the explanation.</p>
+    <p style="color:var(--text2);margin-bottom:14px">${MCQS.length} questions covering everything on the test. Questions and options reshuffle every visit.</p>
     <div style="display:flex;gap:6px;margin-bottom:16px;flex-wrap:wrap">
       <button class="btn ${quizFilter==='all'?'btn-blue':'btn-secondary'}" onclick="setQuizFilter('all')">All (${MCQS.length})</button>
       <button class="btn ${quizFilter==='wrong'?'btn-primary':'btn-secondary'}" onclick="setQuizFilter('wrong')" ${wrong===0?'disabled style="opacity:.4;cursor:not-allowed"':''}>Just wrong (${wrong})</button>
       <button class="btn ${quizFilter==='unanswered'?'btn-blue':'btn-secondary'}" onclick="setQuizFilter('unanswered')" ${answered===MCQS.length?'disabled style="opacity:.4;cursor:not-allowed"':''}>Not yet answered (${MCQS.length-answered})</button>
       ${wrong>0?`<button class="btn btn-primary" onclick="retryWrong()" title="Clear answers on the ones you got wrong so you can try them again">↻ Retry wrong (${wrong})</button>`:''}
+      <button class="btn btn-secondary" onclick="reshuffleQuiz()" title="Re-randomize the order of questions and options">🎲 Shuffle</button>
     </div>
     <div class="quiz-controls">
       <div class="meta">Answered: <strong>${answered} / ${MCQS.length}</strong> · Correct: <strong>${correct}</strong> ${answered>0?`(${pct}%)`:''}</div>
       <button class="btn btn-secondary" onclick="resetQuiz()">Reset all</button>
     </div>
-    ${visible.length === 0 ? '<div style="padding:40px;text-align:center;color:var(--text2)">Nothing to show in this filter.</div>' : visible.map(({q, i}) => {
+    ${visible.length === 0 ? '<div style="padding:40px;text-align:center;color:var(--text2)">Nothing to show in this filter.</div>' : visible.map(({q, i}, displayPos) => {
       const picked = answers[i];
       const sign = q.signId ? findSign(q.signId) : null;
+      const shuf = quizOptOrder[i] || q.opts.map((_, j) => j);
+      const correctDisplayPos = shuf.indexOf(q.ans);
       return `
         <div class="q-card">
-          <div class="q-num">Question ${i+1}</div>
+          <div class="q-num">Question ${displayPos+1}</div>
           <div class="q-text">${escapeHtml(q.q)}</div>
           ${sign ? `<div class="q-sign"><div class="sign-svg">${sign.svg}</div></div>` : ''}
           <div class="q-opts">
-            ${q.opts.map((o, oi) => {
+            ${shuf.map((origOi, displayedOi) => {
+              const o = q.opts[origOi];
               let cls = '';
               if(picked !== undefined){
-                if(oi === q.ans) cls = 'correct';
-                else if(oi === picked) cls = 'wrong';
+                if(origOi === q.ans) cls = 'correct';
+                else if(origOi === picked) cls = 'wrong';
               }
-              return `<button class="q-opt ${cls}" onclick="answerQ(${i},${oi})" ${picked!==undefined?'disabled':''}>${String.fromCharCode(65+oi)}. ${escapeHtml(o)}</button>`;
+              return `<button class="q-opt ${cls}" onclick="answerQ(${i},${origOi})" ${picked!==undefined?'disabled':''}>${String.fromCharCode(65+displayedOi)}. ${escapeHtml(o)}</button>`;
             }).join('')}
           </div>
-          <div class="q-expl ${picked!==undefined?'show':''}">${picked===q.ans?'<strong>Correct.</strong> ':`<strong>Not quite.</strong> The right answer is <strong>${String.fromCharCode(65+q.ans)}. ${escapeHtml(q.opts[q.ans])}</strong>. `}${escapeHtml(q.expl)}</div>
+          <div class="q-expl ${picked!==undefined?'show':''}">${picked===q.ans?'<strong>Correct.</strong> ':`<strong>Not quite.</strong> The right answer is <strong>${String.fromCharCode(65+correctDisplayPos)}. ${escapeHtml(q.opts[q.ans])}</strong>. `}${escapeHtml(q.expl)}</div>
         </div>
       `;
     }).join('')}
   `;
+}
+function reshuffleQuiz(){
+  shuffleQuiz();
+  renderQuiz();
+  toast('Questions and options reshuffled');
 }
 function setQuizFilter(mode){
   quizFilter = mode;
@@ -959,9 +997,10 @@ function retryWrong(){
   if(wrongIdx.length === 0) return;
   wrongIdx.forEach(i => delete state.quiz[i]);
   saveState();
+  shuffleQuiz();
   quizFilter = 'unanswered';
   renderQuiz();
-  toast(`Cleared ${wrongIdx.length} wrong answer${wrongIdx.length===1?'':'s'} — try them again`);
+  toast(`Cleared ${wrongIdx.length} wrong answer${wrongIdx.length===1?'':'s'} — reshuffled, try them again`);
 }
 function answerQ(i, oi){
   state.quiz[i] = oi;
@@ -1047,8 +1086,9 @@ function renderMock(){
   `;
 }
 function startMock(){
-  const shuffled = [...MCQS].sort(() => Math.random() - 0.5).slice(0, Math.min(50, MCQS.length));
-  mockState = {questions: shuffled, idx: 0, answers: {}, done: false};
+  const pool = shuffleArr([...MCQS]);
+  const questions = pool.slice(0, Math.min(50, pool.length)).map(shuffleQuestion);
+  mockState = {questions, idx: 0, answers: {}, done: false};
   renderMock();
 }
 function mockPick(oi){
@@ -1074,9 +1114,11 @@ function endMock(){
 function retryMissed(){
   const missed = mockState.questions.filter((q, i) => mockState.answers[i] !== q.ans);
   if(missed.length === 0) return;
-  mockState = {questions: missed, idx: 0, answers: {}, done: false, retry: true};
+  // re-shuffle options for the retry so the wrong-position memory is broken
+  const reshuffled = shuffleArr(missed.slice()).map(q => shuffleQuestion(q._orig));
+  mockState = {questions: reshuffled, idx: 0, answers: {}, done: false, retry: true};
   renderMock();
-  toast(`Retry round: ${missed.length} question${missed.length===1?'':'s'}`);
+  toast(`Retry round: ${missed.length} question${missed.length===1?'':'s'} — reshuffled`);
 }
 function reviewMock(){
   const root = document.getElementById('mockReview');
@@ -1162,6 +1204,7 @@ window.answerQ = answerQ;
 window.resetQuiz = resetQuiz;
 window.setQuizFilter = setQuizFilter;
 window.retryWrong = retryWrong;
+window.reshuffleQuiz = reshuffleQuiz;
 window.startMock = startMock;
 window.mockPick = mockPick;
 window.mockNext = mockNext;
